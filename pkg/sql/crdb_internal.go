@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -40,6 +41,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/scheduledjobs"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
+	"github.com/cockroachdb/cockroach/pkg/server/license"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/server/status/statuspb"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
@@ -237,6 +239,7 @@ var crdbInternal = virtualSchema{
 		catconstants.CrdbInternalClusterInspectErrorsViewID:         crdbInternalClusterInspectErrorsView,
 		catconstants.CrdbInternalNodeActiveSessionHistoryTableID:    crdbInternalNodeActiveSessionHistoryTable,
 		catconstants.CrdbInternalClusterActiveSessionHistoryTableID: crdbInternalClusterActiveSessionHistoryTable,
+		catconstants.CrdbInternalNodeLicenseStatusTableID:           crdbInternalNodeLicenseStatusTable,
 	},
 	validWithNoDatabaseContext: true,
 }
@@ -9958,4 +9961,78 @@ CREATE VIEW crdb_internal.cluster_inspect_errors AS
 		{Name: "crdb_internal_expiration", Typ: types.TimestampTZ},
 	},
 	comment: `wrapper over system.inspect_errors`,
+}
+
+var crdbInternalNodeLicenseStatusTable = virtualSchemaTable{
+	comment: `current license enforcement status on this node (RAM)`,
+	schema: `
+CREATE TABLE crdb_internal.node_license_status (
+  has_license         BOOL NOT NULL,
+  license_type        STRING NOT NULL,
+  edition             STRING NOT NULL,
+  add_ons             STRING NOT NULL,
+  vcpu_entitled       INT4 NOT NULL,
+  vcpu_observed       INT4 NOT NULL,
+  expiration          TIMESTAMPTZ,
+  grace_period_end    TIMESTAMPTZ,
+  requires_telemetry  BOOL NOT NULL,
+  is_disabled         BOOL NOT NULL
+)`,
+	populate: func(
+		ctx context.Context, p *planner, _ catalog.DatabaseDescriptor,
+		addRow func(...tree.Datum) error,
+	) error {
+		enforcer := p.ExecCfg().LicenseEnforcer
+		if enforcer == nil {
+			return nil
+		}
+
+		edInfo := enforcer.GetEditionInfo()
+		editionStr := ""
+		addOnsStr := ""
+		vcpuEntitled := int32(0)
+		if edInfo != nil {
+			editionStr = license.FormatEdition(edInfo.Edition)
+			addOnsStr = license.FormatAddOns(edInfo.AddOns)
+			vcpuEntitled = edInfo.VCPUEntitled
+		}
+
+		var expiry tree.Datum
+		expiryTS := enforcer.GetLicenseExpiryTS()
+		if expiryTS > 0 {
+			d, err := tree.MakeDTimestampTZ(
+				timeutil.Unix(expiryTS, 0), time.Second,
+			)
+			if err != nil {
+				return err
+			}
+			expiry = d
+		} else {
+			expiry = tree.DNull
+		}
+
+		var gpEnd tree.Datum
+		if gpEndTS, hasGP := enforcer.GetGracePeriodEndTS(); hasGP {
+			d, err := tree.MakeDTimestampTZ(gpEndTS, time.Second)
+			if err != nil {
+				return err
+			}
+			gpEnd = d
+		} else {
+			gpEnd = tree.DNull
+		}
+
+		return addRow(
+			tree.MakeDBool(tree.DBool(enforcer.GetHasLicense())),
+			tree.NewDString(enforcer.GetCachedLicType().String()),
+			tree.NewDString(editionStr),
+			tree.NewDString(addOnsStr),
+			tree.NewDInt(tree.DInt(vcpuEntitled)),
+			tree.NewDInt(tree.DInt(runtime.NumCPU())),
+			expiry,
+			gpEnd,
+			tree.MakeDBool(tree.DBool(enforcer.GetRequiresTelemetry())),
+			tree.MakeDBool(tree.DBool(enforcer.GetIsDisabled())),
+		)
+	},
 }

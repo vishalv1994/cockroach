@@ -3799,6 +3799,107 @@ func (m *LevelStats) AppendJSONFields(printComma bool, b redact.RedactableBytes)
 }
 
 // AppendJSONFields implements the EventPayload interface.
+func (m *LicenseValidationEvent) AppendJSONFields(printComma bool, b redact.RedactableBytes) (bool, redact.RedactableBytes) {
+
+	printComma, b = m.CommonEventDetails.AppendJSONFields(printComma, b)
+
+	if m.LicenseID != "" {
+		if printComma {
+			b = append(b, ',')
+		}
+		printComma = true
+		b = append(b, "\"LicenseID\":\""...)
+		b = redact.RedactableBytes(jsonbytes.EncodeString([]byte(b), string(m.LicenseID)))
+		b = append(b, '"')
+	}
+
+	if m.OrganizationID != "" {
+		if printComma {
+			b = append(b, ',')
+		}
+		printComma = true
+		b = append(b, "\"OrganizationID\":\""...)
+		b = redact.RedactableBytes(jsonbytes.EncodeString([]byte(b), string(m.OrganizationID)))
+		b = append(b, '"')
+	}
+
+	if m.Edition != "" {
+		if printComma {
+			b = append(b, ',')
+		}
+		printComma = true
+		b = append(b, "\"Edition\":\""...)
+		b = redact.RedactableBytes(jsonbytes.EncodeString([]byte(b), string(m.Edition)))
+		b = append(b, '"')
+	}
+
+	if len(m.AddOns) > 0 {
+		if printComma {
+			b = append(b, ',')
+		}
+		printComma = true
+		b = append(b, "\"AddOns\":["...)
+		for i, v := range m.AddOns {
+			if i > 0 {
+				b = append(b, ',')
+			}
+			b = append(b, '"')
+			b = redact.RedactableBytes(jsonbytes.EncodeString([]byte(b), v))
+			b = append(b, '"')
+		}
+		b = append(b, ']')
+	}
+
+	if m.ExpirationTimestamp != 0 {
+		if printComma {
+			b = append(b, ',')
+		}
+		printComma = true
+		b = append(b, "\"ExpirationTimestamp\":"...)
+		b = strconv.AppendInt(b, int64(m.ExpirationTimestamp), 10)
+	}
+
+	if m.VCPUEntitled != 0 {
+		if printComma {
+			b = append(b, ',')
+		}
+		printComma = true
+		b = append(b, "\"VCPUEntitled\":"...)
+		b = strconv.AppendInt(b, int64(m.VCPUEntitled), 10)
+	}
+
+	if m.VCPUObserved != 0 {
+		if printComma {
+			b = append(b, ',')
+		}
+		printComma = true
+		b = append(b, "\"VCPUObserved\":"...)
+		b = strconv.AppendInt(b, int64(m.VCPUObserved), 10)
+	}
+
+	if m.LicenseType != "" {
+		if printComma {
+			b = append(b, ',')
+		}
+		printComma = true
+		b = append(b, "\"LicenseType\":\""...)
+		b = redact.RedactableBytes(jsonbytes.EncodeString([]byte(b), string(m.LicenseType)))
+		b = append(b, '"')
+	}
+
+	if m.CPUUtilizationPct != 0 {
+		if printComma {
+			b = append(b, ',')
+		}
+		printComma = true
+		b = append(b, "\"CPUUtilizationPct\":"...)
+		b = strconv.AppendFloat(b, float64(m.CPUUtilizationPct), 'f', -1, 64)
+	}
+
+	return printComma, b
+}
+
+// AppendJSONFields implements the EventPayload interface.
 func (m *LowDiskSpace) AppendJSONFields(printComma bool, b redact.RedactableBytes) (bool, redact.RedactableBytes) {
 
 	printComma, b = m.CommonEventDetails.AppendJSONFields(printComma, b)

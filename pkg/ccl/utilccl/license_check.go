@@ -3,49 +3,23 @@
 // Use of this software is governed by the CockroachDB Software License
 // included in the /LICENSE file.
 
-package license
+package utilccl
 
 import (
 	"context"
 	"sync/atomic"
 	"time"
 
-	"github.com/cockroachdb/cockroach/pkg/server/license/licensepb"
+	"github.com/cockroachdb/cockroach/pkg/ccl/utilccl/licenseccl"
+	licenseserver "github.com/cockroachdb/cockroach/pkg/server/license"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/metric"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 )
-
-// LicenseTTLMetadata is the metric metadata for seconds until license expiry.
-var LicenseTTLMetadata = metric.Metadata{
-	// This metric name isn't namespaced for backwards compatibility. The
-	// prior version of this metric was manually inserted into the prometheus
-	// output.
-	Name:        "seconds_until_enterprise_license_expiry",
-	Help:        "Seconds until license expiry (0 if no license present)",
-	Measurement: "Seconds",
-	Unit:        metric.Unit_SECONDS,
-	Visibility:  metric.Metadata_ESSENTIAL,
-	Category:    metric.Metadata_EXPIRATIONS,
-	HowToUse:    "See Description.",
-}
-
-// AdditionalLicenseTTLMetadata is an additional metric for license TTL under
-// a different metric name.
-var AdditionalLicenseTTLMetadata = metric.Metadata{
-	Name:        "seconds_until_license_expiry",
-	Help:        "Seconds until license expiry (0 if no license present)",
-	Measurement: "Seconds",
-	Unit:        metric.Unit_SECONDS,
-	Visibility:  metric.Metadata_ESSENTIAL,
-	Category:    metric.Metadata_EXPIRATIONS,
-	HowToUse:    "See Description.",
-}
 
 // trialLicenseExpiryTimestamp tracks the expiration timestamp of any trial
 // licenses that have been installed on this cluster (past or present).
@@ -67,7 +41,7 @@ var EnterpriseLicense = settings.RegisterStringSetting(
 				return nil
 			}
 
-			if l.Type == licensepb.License_Trial &&
+			if l.Type == licenseccl.License_Trial &&
 				trialLicenseExpiryTimestamp.Load() > 0 &&
 				l.ValidUntilUnixSec != trialLicenseExpiryTimestamp.Load() {
 				return errors.WithHint(
@@ -89,6 +63,35 @@ var EnterpriseLicense = settings.RegisterStringSetting(
 // keeping the entries private.
 type licenseCacheKey string
 
+// TestingEnableEnterprise allows overriding the license check in tests. This
+// function was deprecated when the core license was removed. We no longer
+// distinguish between features enabled only for enterprise. All features are
+// enabled, and if a license policy is violated, we throttle connections.
+// Callers can safely remove any reference to this function.
+//
+// Deprecated
+func TestingEnableEnterprise() func() {
+	return func() {}
+}
+
+// TestingDisableEnterprise allows re-enabling the license check in tests.
+//
+// See description in TestingEnableEnterprise for rationale about deprecation.
+//
+// Deprecated
+func TestingDisableEnterprise() func() {
+	return func() {}
+}
+
+// CheckEnterpriseEnabled is a deprecated no-op. All features are now enabled
+// regardless of license type; policy violations result in throttled connections
+// rather than feature gating.
+//
+// Deprecated
+func CheckEnterpriseEnabled(st *cluster.Settings, feature string) error {
+	return nil
+}
+
 // GetLicenseTTL returns the TTL for the active cluster license. It reads the
 // license from the cluster settings and computes the remaining time until
 // expiry.
@@ -108,14 +111,14 @@ func GetLicenseTTL(ctx context.Context, st *cluster.Settings, ts timeutil.TimeSo
 // GetLicense fetches the license from the given settings, using
 // Settings.Cache to cache the decoded license (if any). The returned license
 // must not be modified by the caller.
-func GetLicense(st *cluster.Settings) (*licensepb.License, error) {
+func GetLicense(st *cluster.Settings) (*licenseccl.License, error) {
 	str := EnterpriseLicense.Get(&st.SV)
 	if str == "" {
 		return nil, nil
 	}
 	cacheKey := licenseCacheKey(str)
 	if cachedLicense, ok := st.Cache.Load(cacheKey); ok {
-		return (*cachedLicense).(*licensepb.License), nil
+		return (*cachedLicense).(*licenseccl.License), nil
 	}
 	license, err := decode(str)
 	if err != nil {
@@ -149,18 +152,18 @@ func GetLicenseEnvironment(st *cluster.Settings) (string, error) {
 }
 
 // decode attempts to read a base64 encoded License.
-func decode(s string) (*licensepb.License, error) {
-	lic, err := licensepb.Decode(s)
+func decode(s string) (*licenseccl.License, error) {
+	lic, err := licenseccl.Decode(s)
 	if err != nil {
 		return nil, pgerror.WithCandidateCode(err, pgcode.Syntax)
 	}
 	return lic, nil
 }
 
-// registerCallbackOnLicenseChange registers a callback to update the license
+// RegisterCallbackOnLicenseChange registers a callback to update the license
 // enforcer whenever the license changes.
-func registerCallbackOnLicenseChange(
-	ctx context.Context, st *cluster.Settings, licenseEnforcer *Enforcer,
+func RegisterCallbackOnLicenseChange(
+	ctx context.Context, st *cluster.Settings, licenseEnforcer *licenseserver.Enforcer,
 ) {
 	if st == nil {
 		return
@@ -175,24 +178,32 @@ func registerCallbackOnLicenseChange(
 				"unable to refresh license enforcer for license change: %v", err)
 			return
 		}
-		var licenseType LicType
+		var licenseType licenseserver.LicType
 		var licenseExpiry time.Time
+		var edInfo licenseserver.EditionInfo
 		if lic == nil {
-			licenseType = LicTypeNone
+			licenseType = licenseserver.LicTypeNone
 		} else {
 			licenseExpiry = timeutil.Unix(lic.ValidUntilUnixSec, 0)
 			switch lic.Type {
-			case licensepb.License_Free:
-				licenseType = LicTypeFree
-			case licensepb.License_Trial:
-				licenseType = LicTypeTrial
-			case licensepb.License_Evaluation:
-				licenseType = LicTypeEvaluation
+			case licenseccl.License_Free:
+				licenseType = licenseserver.LicTypeFree
+			case licenseccl.License_Trial:
+				licenseType = licenseserver.LicTypeTrial
+			case licenseccl.License_Evaluation:
+				licenseType = licenseserver.LicTypeEvaluation
 			default:
-				licenseType = LicTypeEnterprise
+				licenseType = licenseserver.LicTypeEnterprise
+			}
+			edInfo.Edition = int32(lic.Edition)
+			edInfo.VCPUEntitled = lic.VcpuEntitled
+			edInfo.LicenseID = lic.LicenseId
+			edInfo.OrganizationID = lic.OrganizationId
+			for _, a := range lic.AddOns {
+				edInfo.AddOns = append(edInfo.AddOns, int32(a))
 			}
 		}
-		licenseEnforcer.RefreshForLicenseChange(ctx, licenseType, licenseExpiry)
+		licenseEnforcer.RefreshForLicenseChange(ctx, licenseType, licenseExpiry, edInfo)
 
 		expiry, err := licenseEnforcer.UpdateTrialLicenseExpiry(
 			ctx, licenseType, isChange, licenseExpiry.Unix())
@@ -209,4 +220,11 @@ func registerCallbackOnLicenseChange(
 		func(ctx context.Context) { refreshFunc(ctx, true /* isChange */) })
 	// Call the refresh function for the current license.
 	refreshFunc(ctx, false /* isChange */)
+}
+
+func init() {
+	licenseserver.RegisterCallbackOnLicenseChange = RegisterCallbackOnLicenseChange
+	licenseserver.ResetTrialLicenseExpiryTimestamp = func() {
+		trialLicenseExpiryTimestamp.Store(0)
+	}
 }

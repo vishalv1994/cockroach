@@ -838,6 +838,20 @@ var zipInternalTablesPerNode = DebugZipTableRegistry{
 			"value",
 		},
 	},
+	"crdb_internal.node_license_status": {
+		nonSensitiveCols: NonSensitiveColumns{
+			"has_license",
+			"license_type",
+			"edition",
+			"add_ons",
+			"vcpu_entitled",
+			"vcpu_observed",
+			"expiration",
+			"grace_period_end",
+			"requires_telemetry",
+			"is_disabled",
+		},
+	},
 	"crdb_internal.node_contention_events": {
 		// `key` column contains the contended key, which may contain sensitive
 		// row-level data.

@@ -227,3 +227,36 @@ message SchemaSnapshotMetadata {
   // which includes the redaction of any potential PII.
   repeated string errors = 5 [(gogoproto.jsontag) = ",omitempty"];
 }
+
+// LicenseValidationEvent is emitted periodically to record license state
+// and cluster resource usage for audit-only validation (Q1).
+message LicenseValidationEvent {
+  CommonEventDetails common = 1 [(gogoproto.nullable) = false, (gogoproto.jsontag) = "", (gogoproto.embed) = true];
+
+  // LicenseID is the UUID of the installed license, hex-encoded.
+  string license_id = 2 [(gogoproto.customname) = "LicenseID", (gogoproto.moretags) = "redact:\"nonsensitive\""];
+
+  // OrganizationID is the UUID of the organization, hex-encoded.
+  string organization_id = 3 [(gogoproto.customname) = "OrganizationID", (gogoproto.moretags) = "redact:\"nonsensitive\""];
+
+  // Edition is the capability tier (e.g., "standard", "enterprise", "mission-critical").
+  string edition = 4 [(gogoproto.moretags) = "redact:\"nonsensitive\""];
+
+  // AddOns lists enabled feature bundles (e.g., "data-replication").
+  repeated string add_ons = 5 [(gogoproto.moretags) = "redact:\"nonsensitive\"", (gogoproto.jsontag) = ",omitempty"];
+
+  // ExpirationTimestamp is the license expiry as seconds since Unix epoch.
+  int64 expiration_timestamp = 6;
+
+  // VCPUEntitled is the number of vCPUs the license entitles.
+  int32 vcpu_entitled = 7 [(gogoproto.customname) = "VCPUEntitled"];
+
+  // VCPUObserved is the number of vCPUs observed on this node.
+  int32 vcpu_observed = 8 [(gogoproto.customname) = "VCPUObserved"];
+
+  // LicenseType is the commercial relationship type (e.g., "enterprise", "trial").
+  string license_type = 9 [(gogoproto.moretags) = "redact:\"nonsensitive\"", (gogoproto.jsontag) = ",omitempty"];
+
+  // CPUUtilizationPct is the current CPU utilization percentage on this node.
+  double cpu_utilization_pct = 10 [(gogoproto.customname) = "CPUUtilizationPct"];
+}

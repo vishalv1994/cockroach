@@ -13,9 +13,9 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/base"
 	build "github.com/cockroachdb/cockroach/pkg/build"
+	"github.com/cockroachdb/cockroach/pkg/ccl/utilccl"
+	"github.com/cockroachdb/cockroach/pkg/ccl/utilccl/licenseccl"
 	"github.com/cockroachdb/cockroach/pkg/server/diagnostics/diagnosticspb"
-	"github.com/cockroachdb/cockroach/pkg/server/license"
-	"github.com/cockroachdb/cockroach/pkg/server/license/licensepb"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
@@ -84,9 +84,9 @@ func TestBuildReportingURL(t *testing.T) {
 	require.NoError(t, err)
 	organizationID, err := uuid.FromString("123362b1-4f67-4bc0-b7dd-5628e49d2321")
 	require.NoError(t, err)
-	license := &licensepb.License{
+	license := &licenseccl.License{
 		ValidUntilUnixSec: 4,
-		Type:              licensepb.License_Enterprise,
+		Type:              licenseccl.License_Enterprise,
 		Environment:       1,
 		LicenseId:         licenseID.GetBytes(),
 		OrganizationId:    organizationID.GetBytes(),
@@ -133,40 +133,40 @@ func TestShouldReportDiagnostics(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	const noLicense = licensepb.License_Type(math.MaxInt32)
+	const noLicense = licenseccl.License_Type(math.MaxInt32)
 
 	st := cluster.MakeClusterSettings()
 	t0 := timeutil.Unix(0, 0)
 	logcrash.SetGlobalSettings(&st.SV)
 	for _, test := range []struct {
 		diagnostics bool
-		licenseType licensepb.License_Type
+		licenseType licenseccl.License_Type
 		expected    bool
 	}{
-		{true, licensepb.License_Enterprise, true},
-		{false, licensepb.License_Enterprise, false},
-		{true, licensepb.License_NonCommercial, true},
-		{false, licensepb.License_NonCommercial, false},
-		{true, licensepb.License_Evaluation, true},
-		{false, licensepb.License_Evaluation, false},
-		{true, licensepb.License_Trial, true},
-		{false, licensepb.License_Trial, true},
-		{true, licensepb.License_Free, true},
-		{false, licensepb.License_Free, true},
+		{true, licenseccl.License_Enterprise, true},
+		{false, licenseccl.License_Enterprise, false},
+		{true, licenseccl.License_NonCommercial, true},
+		{false, licenseccl.License_NonCommercial, false},
+		{true, licenseccl.License_Evaluation, true},
+		{false, licenseccl.License_Evaluation, false},
+		{true, licenseccl.License_Trial, true},
+		{false, licenseccl.License_Trial, true},
+		{true, licenseccl.License_Free, true},
+		{false, licenseccl.License_Free, true},
 		{true, noLicense, true},
 		{false, noLicense, false},
 	} {
 		t.Run(fmt.Sprintf("diagnostics enabled=%t, license=%s", test.diagnostics, test.licenseType), func(t *testing.T) {
 			ctx := context.Background()
 			if test.licenseType != noLicense {
-				lic, err := (&licensepb.License{
+				lic, err := (&licenseccl.License{
 					Type:              test.licenseType,
 					ValidUntilUnixSec: t0.AddDate(0, 1, 0).Unix(),
 				}).Encode()
 				require.NoError(t, err)
-				license.EnterpriseLicense.Override(ctx, &st.SV, lic)
+				utilccl.EnterpriseLicense.Override(ctx, &st.SV, lic)
 			} else {
-				license.EnterpriseLicense.Override(ctx, &st.SV, "")
+				utilccl.EnterpriseLicense.Override(ctx, &st.SV, "")
 			}
 			logcrash.DiagnosticsReportingEnabled.Override(ctx, &st.SV, test.diagnostics)
 			require.Equal(t, test.expected, shouldReportDiagnostics(context.Background(), st))

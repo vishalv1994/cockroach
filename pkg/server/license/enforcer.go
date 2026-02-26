@@ -87,6 +87,14 @@ type Enforcer struct {
 	// that no trial license has ever been installed.
 	trialUsageExpiry atomic.Int64
 
+	// editionInfo caches the edition, add-ons, and vCPU entitlement from
+	// the currently installed license. Used for telemetry emission only (Q1).
+	editionInfo atomic.Value // stores *EditionInfo
+
+	// cachedLicType stores the current license type for use in telemetry
+	// emission without requiring re-decoding the license.
+	cachedLicType atomic.Int32
+
 	// db is a pointer to the database for use for KV read/writes. This is only
 	// set for the system tenant.
 	db isql.DB
@@ -202,12 +210,12 @@ func (e *Enforcer) Start(ctx context.Context, st *cluster.Settings, opts ...Opti
 	// must be done after setting the cluster init grace period timestamp. And it
 	// is needed for testing that may be running this in isolation to the license
 	// ccl package.
-	e.RefreshForLicenseChange(ctx, LicTypeNone, time.Time{})
+	e.RefreshForLicenseChange(ctx, LicTypeNone, time.Time{}, EditionInfo{})
 
 	// Register a callback so that we refresh our state whenever the license
 	// changes. This will also update the state for the current license if not
 	// in test.
-	registerCallbackOnLicenseChange(ctx, st, e)
+	RegisterCallbackOnLicenseChange(ctx, st, e)
 
 	// This should be the final step after all error checks are completed.
 	e.isDisabled.Store(false)
@@ -461,10 +469,12 @@ func (e *Enforcer) MaybeFailIfThrottled(
 // settings, unmarshaling it, and checking its type and expiry each time,
 // caching the information improves efficiency since licenses change infrequently.
 func (e *Enforcer) RefreshForLicenseChange(
-	ctx context.Context, licType LicType, licenseExpiry time.Time,
+	ctx context.Context, licType LicType, licenseExpiry time.Time, editionInfo EditionInfo,
 ) {
 	e.hasLicense.Store(licType != LicTypeNone)
 	e.licenseExpiryTS.Store(licenseExpiry.Unix())
+	e.editionInfo.Store(&editionInfo)
+	e.cachedLicType.Store(int32(licType))
 
 	switch licType {
 	case LicTypeNone:
@@ -496,6 +506,27 @@ func (e *Enforcer) RefreshForLicenseChange(
 	}
 	sb.Printf("telemetry required: %t", e.licenseRequiresTelemetry.Load())
 	log.Dev.Infof(ctx, "%s", sb.RedactableString())
+}
+
+// GetEditionInfo returns the cached edition info from the current license, or
+// nil if no edition info has been stored.
+func (e *Enforcer) GetEditionInfo() *EditionInfo {
+	v := e.editionInfo.Load()
+	if v == nil {
+		return nil
+	}
+	return v.(*EditionInfo)
+}
+
+// GetCachedLicType returns the cached license type.
+func (e *Enforcer) GetCachedLicType() LicType {
+	return LicType(e.cachedLicType.Load())
+}
+
+// GetLicenseExpiryTS returns the cached license expiration timestamp as
+// seconds since the Unix epoch. Returns 0 if no license is installed.
+func (e *Enforcer) GetLicenseExpiryTS() int64 {
+	return e.licenseExpiryTS.Load()
 }
 
 // UpdateTrialLicenseExpiry returns the expiration timestamp of any trial license
@@ -549,7 +580,7 @@ func (e *Enforcer) TestingResetTrialUsage(ctx context.Context) error {
 			return err
 		}
 		e.trialUsageExpiry.Store(0)
-		trialLicenseExpiryTimestamp.Store(0)
+		ResetTrialLicenseExpiryTimestamp()
 		log.Dev.Infof(ctx, "trial license expiry was reset")
 		return nil
 	})

@@ -7,6 +7,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/backup",
+        "//pkg/base",
         "//pkg/ccl/changefeedccl",
         "//pkg/ccl/gssapiccl",
         "//pkg/ccl/jwtauthccl",
@@ -14,6 +15,7 @@ go_library(
         "//pkg/ccl/multiregionccl",
         "//pkg/ccl/multitenantccl",
         "//pkg/ccl/oidcccl",
+        "//pkg/ccl/utilccl",
         "//pkg/ccl/workloadccl",
         "//pkg/ccl/workloadccl/cliccl",
         "//pkg/cloud/impl:cloudimpl",

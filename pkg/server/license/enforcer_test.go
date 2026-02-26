@@ -7,8 +7,10 @@ package license_test
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"regexp"
+	"runtime"
 	"testing"
 	"time"
 
@@ -26,6 +28,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
+	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/stretchr/testify/require"
 )
 
@@ -288,7 +291,7 @@ func TestThrottle(t *testing.T) {
 				license.WithTelemetryStatusReporter(&mockTelemetryStatusReporter{lastPingTime: &tc.lastTelemetryPingTime}),
 			)
 			require.NoError(t, err)
-			e.RefreshForLicenseChange(ctx, tc.licType, tc.licExpiry)
+			e.RefreshForLicenseChange(ctx, tc.licType, tc.licExpiry, license.EditionInfo{})
 			notice, err := e.TestingMaybeFailIfThrottled(ctx, tc.openTxnsCount)
 			if tc.expectedErrRegex == "" {
 				require.NoError(t, err)
@@ -371,7 +374,7 @@ func TestThrottleErrorMsg(t *testing.T) {
 
 	// Set up a free license that will expire in 30 days
 	licenseEnforcer := srv.ApplicationLayer().ExecutorConfig().(sql.ExecutorConfig).LicenseEnforcer
-	licenseEnforcer.RefreshForLicenseChange(ctx, license.LicTypeFree, t30d)
+	licenseEnforcer.RefreshForLicenseChange(ctx, license.LicTypeFree, t30d, license.EditionInfo{})
 
 	for _, tc := range []struct {
 		desc string
@@ -462,4 +465,176 @@ func TestLicenseDisabledAfterRestart(t *testing.T) {
 
 	enforcer = tc.SystemLayer(0).ExecutorConfig().(sql.ExecutorConfig).LicenseEnforcer
 	require.Equal(t, true, enforcer.GetIsDisabled(), "expected license enforcement to be disabled")
+}
+
+func TestFormatEdition(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+
+	for _, tc := range []struct {
+		edition int32
+		want    string
+	}{
+		{0, ""},
+		{1, "standard"},
+		{2, "enterprise"},
+		{3, "mission-critical"},
+		{99, "unknown"},
+		{-1, "unknown"},
+	} {
+		t.Run(fmt.Sprintf("edition_%d", tc.edition), func(t *testing.T) {
+			require.Equal(t, tc.want, license.FormatEdition(tc.edition))
+		})
+	}
+}
+
+func TestFormatAddOns(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+
+	for _, tc := range []struct {
+		desc   string
+		addOns []int32
+		want   string
+	}{
+		{"nil", nil, ""},
+		{"empty", []int32{}, ""},
+		{"single", []int32{1}, "data-replication"},
+		{"multiple", []int32{1, 4}, "data-replication, advanced-compliance"},
+		{"all-valid", []int32{1, 2, 3, 4},
+			"data-replication, advanced-workload-mgmt, data-synchronization, advanced-compliance"},
+		{"with-zero-prefix", []int32{0, 1}, "data-replication"},
+		{"only-zeros", []int32{0, 0}, ""},
+		{"unknown", []int32{99}, "unknown"},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			require.Equal(t, tc.want, license.FormatAddOns(tc.addOns))
+		})
+	}
+}
+
+func TestFormatUUIDBytes(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+
+	// nil returns empty
+	require.Equal(t, "", license.FormatUUIDBytes(nil))
+	// empty slice returns empty
+	require.Equal(t, "", license.FormatUUIDBytes([]byte{}))
+
+	// Valid 16-byte UUID
+	id, err := uuid.FromString("abc362b1-4f67-4bc0-b7dd-5628e49d2cba")
+	require.NoError(t, err)
+	expected := hex.EncodeToString(id.GetBytes())
+	require.Equal(t, expected, license.FormatUUIDBytes(id.GetBytes()))
+}
+
+func TestNodeLicenseStatusNoLicense(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+	srv, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{
+		Knobs: base.TestingKnobs{
+			LicenseTestingKnobs: &license.TestingKnobs{
+				SkipDisable: true,
+			},
+		},
+	})
+	defer srv.Stopper().Stop(ctx)
+
+	tdb := sqlutils.MakeSQLRunner(sqlDB)
+
+	var hasLicense, requiresTelemetry, isDisabled bool
+	var licenseType, edition, addOns string
+	var vcpuEntitled, vcpuObserved int32
+	row := tdb.QueryRow(t,
+		`SELECT has_license, license_type, edition, add_ons, vcpu_entitled,
+		        vcpu_observed, requires_telemetry, is_disabled
+		 FROM crdb_internal.node_license_status`)
+	row.Scan(
+		&hasLicense, &licenseType, &edition, &addOns,
+		&vcpuEntitled, &vcpuObserved, &requiresTelemetry, &isDisabled,
+	)
+
+	require.Equal(t, false, hasLicense)
+	require.Equal(t, "none", licenseType)
+	require.Equal(t, "", edition)
+	require.Equal(t, "", addOns)
+	require.Equal(t, int32(0), vcpuEntitled)
+	require.Equal(t, int32(runtime.NumCPU()), vcpuObserved)
+	require.Equal(t, false, requiresTelemetry)
+	require.Equal(t, false, isDisabled)
+
+	// Verify expiration is NULL when no license is set.
+	var expirationNull bool
+	tdb.QueryRow(t,
+		`SELECT expiration IS NULL FROM crdb_internal.node_license_status`,
+	).Scan(&expirationNull)
+	require.True(t, expirationNull, "expiration should be NULL with no license")
+}
+
+func TestEmitLicenseValidationTelemetry(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+	ts1 := timeutil.Unix(1724329716, 0)
+
+	srv := serverutils.StartServerOnly(t, base.TestServerArgs{
+		Knobs: base.TestingKnobs{
+			LicenseTestingKnobs: &license.TestingKnobs{
+				SkipDisable:       true,
+				OverrideStartTime: &ts1,
+			},
+		},
+	})
+	defer srv.Stopper().Stop(ctx)
+
+	enforcer := srv.SystemLayer().ExecutorConfig().(sql.ExecutorConfig).LicenseEnforcer
+
+	licenseID, err := uuid.FromString("abc362b1-4f67-4bc0-b7dd-5628e49d2cba")
+	require.NoError(t, err)
+	orgID, err := uuid.FromString("123362b1-4f67-4bc0-b7dd-5628e49d2321")
+	require.NoError(t, err)
+
+	futureExpiry := timeutil.Now().Add(365 * 24 * time.Hour)
+	edInfo := license.EditionInfo{
+		Edition:        2,             // ENTERPRISE_EDITION
+		AddOns:         []int32{1, 4}, // DATA_REPLICATION, ADVANCED_COMPLIANCE
+		VCPUEntitled:   8,
+		LicenseID:      licenseID.GetBytes(),
+		OrganizationID: orgID.GetBytes(),
+	}
+	enforcer.RefreshForLicenseChange(ctx, license.LicTypeEnterprise, futureExpiry, edInfo)
+
+	// Emit telemetry and verify it doesn't panic or error.
+	enforcer.EmitLicenseValidationTelemetry(ctx)
+
+	// Verify the enforcer state reflects what we set.
+	require.Equal(t, true, enforcer.GetHasLicense())
+	require.Equal(t, license.LicTypeEnterprise, enforcer.GetCachedLicType())
+
+	retrievedEdInfo := enforcer.GetEditionInfo()
+	require.NotNil(t, retrievedEdInfo)
+	require.Equal(t, int32(2), retrievedEdInfo.Edition)
+	require.Equal(t, []int32{1, 4}, retrievedEdInfo.AddOns)
+	require.Equal(t, int32(8), retrievedEdInfo.VCPUEntitled)
+	require.Equal(t, licenseID.GetBytes(), retrievedEdInfo.LicenseID)
+	require.Equal(t, orgID.GetBytes(), retrievedEdInfo.OrganizationID)
+}
+
+func TestEmitLicenseValidationTelemetryDisabled(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+
+	// Start a server without SkipDisable so the enforcer is disabled
+	// (single-node auto-disables).
+	srv := serverutils.StartServerOnly(t, base.TestServerArgs{})
+	defer srv.Stopper().Stop(ctx)
+
+	enforcer := srv.SystemLayer().ExecutorConfig().(sql.ExecutorConfig).LicenseEnforcer
+	require.True(t, enforcer.GetIsDisabled())
+
+	// This should return early without panicking.
+	enforcer.EmitLicenseValidationTelemetry(ctx)
 }
