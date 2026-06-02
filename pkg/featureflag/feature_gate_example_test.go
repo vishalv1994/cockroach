@@ -17,21 +17,18 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/featureflag"
 	"github.com/cockroachdb/cockroach/pkg/server/license/licensepb"
-	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/stretchr/testify/require"
 )
 
-// changefeedEnabled is a throwaway operator setting that stands in for one of
-// the real feature.*.enabled bools. It is registered at package scope because
-// settings registration must happen at init and panics on duplicate names.
-var changefeedEnabled = settings.RegisterBoolSetting(
-	settings.ApplicationLevel,
-	"test.featuregate.changefeed.enabled",
-	"test-only setting for the feature-gate example",
-	true,
+// cfGate is a license+setting gate modeled on changefeed. It is declared at
+// package scope because WithSetting calls settings.RegisterBoolSetting, which
+// must happen at init time so that cluster settings objects pick up the default.
+var cfGate = featureflag.Register(
+	licensepb.Feature_CHANGEFEED,
+	featureflag.WithSetting("test.featuregate.changefeed.enabled"),
 )
 
 // TestFeatureGateExample demonstrates the feature-gate API shape by building
@@ -53,15 +50,11 @@ func TestFeatureGateExample(t *testing.T) {
 	// A license+setting gate (like changefeed) additionally consults an operator
 	// setting. With the setting defaulting true and no license installed, both
 	// gates allow the feature.
-	cfGate := featureflag.Register(
-		licensepb.Feature_CHANGEFEED,
-		featureflag.WithSetting(changefeedEnabled),
-	)
 	require.NoError(t, cfGate.Enabled(ctx, st))
 
 	// Disabling the operator setting denies the feature even though the license
 	// gate remains permissive.
-	changefeedEnabled.Override(ctx, &st.SV, false)
+	cfGate.Setting().Override(ctx, &st.SV, false)
 	require.Error(t, cfGate.Enabled(ctx, st))
 }
 

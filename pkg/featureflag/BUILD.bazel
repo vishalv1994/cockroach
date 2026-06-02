@@ -28,7 +28,6 @@ go_test(
     deps = [
         ":featureflag",
         "//pkg/server/license/licensepb",
-        "//pkg/settings",
         "//pkg/settings/cluster",
         "//pkg/util/leaktest",
         "//pkg/util/log",

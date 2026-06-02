@@ -28,10 +28,9 @@ import (
 // the license grants. This deliberately avoids relying on denormalized cluster
 // settings so that entitlements remain a single source of truth.
 //
-// The operator setting, when supplied via WithSetting, is one of the existing
-// feature.*.enabled cluster-setting bools. The gate does not register a new
-// setting; it reuses the one the caller already owns, so that operators retain
-// the ability to turn a feature off even when the license permits it.
+// The operator setting, when supplied via WithSetting, is a feature.*.enabled
+// cluster-setting bool that the gate registers on the caller's behalf. Operators
+// retain the ability to turn a feature off even when the license permits it.
 //
 // Lifecycle: a FeatureGate is constructed once, typically in a package-level
 // var via Register, and is immutable thereafter. It is evaluated per-use by
@@ -78,14 +77,27 @@ func Register(feature licensepb.Feature, opts ...Option) *FeatureGate {
 	return g
 }
 
-// WithSetting attaches an existing operator cluster setting to the gate. The
-// gate does not register a new setting; the caller supplies one of the existing
-// feature.*.enabled bools. When the setting is false, Enabled denies the
-// feature even if the license permits it.
-func WithSetting(s *settings.BoolSetting) Option {
+// WithSetting registers a feature.*.enabled cluster-setting bool with the given
+// name and attaches it to the gate. The setting defaults to
+// FeatureFlagEnabledDefault (true). When the setting is false, Enabled denies
+// the feature even if the license permits it. Use Setting() to access the
+// registered *BoolSetting for direct reads or test overrides.
+func WithSetting(name string) Option {
 	return func(g *FeatureGate) {
-		g.setting = s
+		g.setting = settings.RegisterBoolSetting(
+			settings.ApplicationLevel,
+			settings.InternalKey(name),
+			"set to true to enable the feature, false to disable; default is true",
+			FeatureFlagEnabledDefault,
+			settings.WithPublic,
+		)
 	}
+}
+
+// Setting returns the operator cluster setting attached to this gate, or nil if
+// the gate was constructed without WithSetting.
+func (g *FeatureGate) Setting() *settings.BoolSetting {
+	return g.setting
 }
 
 // WithName overrides the display name used in error messages. Without it, the
@@ -98,9 +110,9 @@ func WithName(name string) Option {
 
 // WithExperimental marks the gate as experimental.
 //
-// TODO: the evaluation semantics for experimental gates (build tag? version
-// gate? injected setting?) are an open design question for David. Enabled does
-// not yet enforce experimental gating.
+// TODO(vishalv): stub — not enforced by Enabled yet. The real implementation
+// would allow experimental features in non-release builds and require an
+// explicit unsafe-experimental-mode interlock in release builds.
 func WithExperimental() Option {
 	return func(g *FeatureGate) {
 		g.experimental = true
@@ -109,8 +121,8 @@ func WithExperimental() Option {
 
 // WithCloudOnly marks the gate as available only in cloud deployments.
 //
-// TODO: the evaluation semantics for cloud-only gates are an open design
-// question for David. Enabled does not yet enforce cloud-only gating.
+// TODO(vishalv): stub — not enforced by Enabled yet. The real implementation
+// would check the MSO environment variable to determine cloud context.
 func WithCloudOnly() Option {
 	return func(g *FeatureGate) {
 		g.cloudOnly = true
@@ -136,7 +148,7 @@ var GetLicenseHook func(st *cluster.Settings) (*licensepb.License, error)
 //     the call is denied with an OperatorIntervention error and a denial
 //     telemetry counter is incremented.
 //
-// Experimental and cloud-only gating are not yet enforced.
+// Experimental and cloud-only gating are stubs and not yet enforced.
 func (g *FeatureGate) Enabled(ctx context.Context, st *cluster.Settings) error {
 	// License gate first.
 	//
